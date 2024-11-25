@@ -1,0 +1,648 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Security Hub alerting and processing with AppConfig and Step Functions
+
+Parameters:
+  AlertEmail:
+    Description: Email address for receiving alert emails from SNS
+    Type: String
+
+  SNSKmsKeyArnParameter:
+    Type: String
+    Description: "SSM Parameter Store path for the KMS Key ARN used for SNS topic encryption"
+
+Resources:
+  ### Alerting Topic configuration
+  SecurityHubComplianceFailedSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: SecurityHubComplianceFailedAlerts
+      KmsMasterKeyId: !Sub "{{resolve:ssm:${SNSKmsKeyArnParameter}:1}}"
+
+  EventTopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: !GetAtt StepFunctionRole.Arn
+            Action: "sns:Publish"
+            Resource: !Ref SecurityHubComplianceFailedSNSTopic
+      Topics:
+        - !Ref SecurityHubComplianceFailedSNSTopic
+
+  SecurityHubComplianceFailedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SecurityHubComplianceFailedSNSTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  ### AppConfig Configuration
+  SecurityHubAlertAppConfigApplication:
+    Type: AWS::AppConfig::Application
+    Properties:
+      Name: SecurityHubAlertApplication
+      Description: Application to manage Security Hub alert configuration
+
+  SecurityHubAlertAppConfigEnvironment:
+    Type: AWS::AppConfig::Environment
+    Properties:
+      ApplicationId: !Ref SecurityHubAlertAppConfigApplication
+      Name: Production
+      Description: Environment for Security Hub Alert Configuration
+      Monitors: []
+
+  SecurityHubAlertAppConfigConfigProfile:
+    Type: AWS::AppConfig::ConfigurationProfile
+    Properties:
+      ApplicationId: !Ref SecurityHubAlertAppConfigApplication
+      Name: SecurityHubAlertConfigProfile
+      LocationUri: "hosted"
+      Type: "AWS.Freeform"
+      Description: Configuration profile for managing Security Hub alert logic
+
+  SecurityHubAlertAppConfigConfig:
+    Type: AWS::AppConfig::HostedConfigurationVersion
+    Properties:
+      ApplicationId: !Ref SecurityHubAlertAppConfigApplication
+      ConfigurationProfileId: !Ref SecurityHubAlertAppConfigConfigProfile
+      ContentType: "application/json"
+      Content: |
+        {
+          "excludedControlIds": [
+            "EC2.18",
+            "IAM.22"
+          ]
+        }
+      Description: Hosted configuration for Security Hub alert settings
+
+  SecurityHubAlertDeploymentStrategy:
+    Type: AWS::AppConfig::DeploymentStrategy
+    Properties:
+      Name: SecurityHubAlertDeploymentStrategy
+      Description: Deployment strategy for Security Hub Alert configuration
+      DeploymentDurationInMinutes: 0
+      FinalBakeTimeInMinutes: 0
+      GrowthFactor: 100
+      ReplicateTo: NONE
+
+  SecurityHubAlertConfigDeployment:
+    Type: AWS::AppConfig::Deployment
+    Properties:
+      ApplicationId: !Ref SecurityHubAlertAppConfigApplication
+      EnvironmentId: !Ref SecurityHubAlertAppConfigEnvironment
+      ConfigurationProfileId: !Ref SecurityHubAlertAppConfigConfigProfile
+      ConfigurationVersion: !Ref SecurityHubAlertAppConfigConfig
+      DeploymentStrategyId: !Ref SecurityHubAlertDeploymentStrategy
+
+  ### EventBridge Configuration
+  EventBridgeStepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "events.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "StepFunctionInvokePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "states:StartExecution"
+                Resource: !GetAtt SecurityHubAlertStepFunction.Arn
+
+  # CRITICAL findings
+  SecurityHubCriticalEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SecurityHubCriticalFindingsRule
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - "Security Hub Findings - Imported"
+        detail:
+          findings:
+            Compliance:
+              Status:
+                - FAILED
+            Severity:
+              Label:
+                - CRITICAL
+            Workflow:
+              Status:
+                - NEW
+      Targets:
+        - Arn: !GetAtt SecurityHubAlertStepFunction.Arn
+          Id: "SecurityHubCriticalStepFunction"
+          RoleArn: !GetAtt EventBridgeStepFunctionRole.Arn
+
+  # HIGH findings
+  SecurityHubHighEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SecurityHubHighFindingsRule
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - "Security Hub Findings - Imported"
+        detail:
+          findings:
+            Compliance:
+              Status:
+                - FAILED
+            Severity:
+              Label:
+                - HIGH
+            Workflow:
+              Status:
+                - NEW
+      Targets:
+        - Arn: !GetAtt SecurityHubAlertStepFunction.Arn
+          Id: "SecurityHubHighStepFunction"
+          RoleArn: !GetAtt EventBridgeStepFunctionRole.Arn
+
+  # MEDIUM findings
+  SecurityHubMediumEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SecurityHubMediumFindingsRule
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - "Security Hub Findings - Imported"
+        detail:
+          findings:
+            Compliance:
+              Status:
+                - FAILED
+            Severity:
+              Label:
+                - MEDIUM
+            Workflow:
+              Status:
+                - NEW
+      Targets:
+        - Arn: !GetAtt SecurityHubAlertStepFunction.Arn
+          Id: "SecurityHubMediumStepFunction"
+          RoleArn: !GetAtt EventBridgeStepFunctionRole.Arn
+
+  # LOW findings
+  SecurityHubLowEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SecurityHubLowFindingsRule
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - "Security Hub Findings - Imported"
+        detail:
+          findings:
+            Compliance:
+              Status:
+                - FAILED
+            Severity:
+              Label:
+                - LOW
+            Workflow:
+              Status:
+                - NEW
+      Targets:
+        - Arn: !GetAtt SecurityHubAlertStepFunction.Arn
+          Id: "SecurityHubLowStepFunction"
+          RoleArn: !GetAtt EventBridgeStepFunctionRole.Arn
+
+  # INFORMATIONAL findings
+  SecurityHubInformationalEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SecurityHubInformationalFindingsRule
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - "Security Hub Findings - Imported"
+        detail:
+          findings:
+            Compliance:
+              Status:
+                - FAILED
+            Severity:
+              Label:
+                - INFORMATIONAL
+            Workflow:
+              Status:
+                - NEW
+      Targets:
+        - Arn: !GetAtt SecurityHubAlertStepFunction.Arn
+          Id: "SecurityHubInformationalStepFunction"
+          RoleArn: !GetAtt EventBridgeStepFunctionRole.Arn
+
+  ### Step Function
+  SecurityHubAlertStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: SecurityHubAlertProcessingStateMachine
+      RoleArn: !GetAtt StepFunctionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Process Security Hub alerts with AppConfig",
+          "StartAt": "GetAppConfigData",
+          "States": {
+            "GetAppConfigData": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:appconfig:getConfiguration",
+              "Parameters": {
+                "Application": "SecurityHubAlertApplication",
+                "Configuration": "SecurityHubAlertConfigProfile",
+                "Environment": "Production",
+                "ClientId": "SecurityHubAlertProcessor"
+              },
+              "ResultSelector": {
+                "parsedContent.$": "States.StringToJson($.Content)"
+              },
+              "ResultPath": "$.configData",
+              "Next": "SetMatchResult"
+            },
+            "SetMatchResult": {
+              "Type": "Pass",
+              "Parameters": {
+                "containsMatch.$": "States.ArrayContains($.configData.parsedContent.excludedControlIds, $.detail.findings[0].ProductFields.ControlId)"
+              },
+              "ResultPath": "$.containsMatch",
+              "Next": "EvaluateEvent"
+            },
+            "EvaluateEvent": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.containsMatch.containsMatch",
+                  "BooleanEquals": true,
+                  "Next": "SkipAlert"
+                }
+              ],
+              "Default": "SendAlert"
+            },
+            "SkipAlert": {
+              "Type": "Succeed"
+            },
+            "SendAlert": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:sns:publish",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:SecurityHubComplianceFailedAlerts",
+                "Message.$": "States.Format('\nSecurity Hub Alert - Action Required\n\nControl ID: {}\nTitle: {}\n\nDescription: {}\nRemediation URL: {}\nSeverity: {}\n\nAccount ID: {}\nRegion: {}\n\nResource Summary:\n\nType: {}\nID: {}\n\nDetails: {}\n\nPlease review and take appropriate action.', $.detail.findings[0].ProductFields.ControlId, $.detail.findings[0].Title, $.detail.findings[0].Description, $.detail.findings[0].ProductFields.RecommendationUrl, $.detail.findings[0].FindingProviderFields.Severity.Label, $.detail.findings[0].AwsAccountId, $.detail.findings[0].Region, $.detail.findings[0].Resources[0].Type, $.detail.findings[0].Resources[0].Id, $.detail.findings[0].Resources[0])",
+                "Subject.$": "States.Format('⚠️ Security Hub Alert ⚠️ - {} Severity', $.detail.findings[0].FindingProviderFields.Severity.Label)"
+              },
+              "End": true
+            }
+          }
+        }
+
+  StepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "states.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "AppConfigAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "appconfig:GetConfiguration"
+                Resource:
+                  - !Sub "arn:aws:appconfig:${AWS::Region}:${AWS::AccountId}:application/${SecurityHubAlertAppConfigApplication}"
+                  - !Sub "arn:aws:appconfig:${AWS::Region}:${AWS::AccountId}:application/${SecurityHubAlertAppConfigApplication}/*"
+        - PolicyName: "SNSPublishPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "sns:Publish"
+                Resource: !Ref SecurityHubComplianceFailedSNSTopic
+        - PolicyName: "StepFunctionKMSAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "kms:GenerateDataKey"
+                  - "kms:Decrypt"
+                Resource: !Sub "{{resolve:ssm:${SNSKmsKeyArnParameter}:1}}"
+
+  ### Dashboard
+  SecurityHubDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: SecurityHubFindingsDashboard
+      DashboardBody:
+        Fn::Sub: |
+          {
+              "widgets": [
+                  {
+                      "height": 7,
+                      "width": 4,
+                      "y": 3,
+                      "x": 0,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [ "AWS/Events", "Invocations", "RuleName", "SecurityHubInformationalFindingsRule", { "region": "${AWS::Region}", "label": "Informational Findings" } ]
+                          ],
+                          "period": 86400,
+                          "region": "${AWS::Region}",
+                          "stacked": false,
+                          "title": "Informational Findings",
+                          "view": "gauge",
+                          "stat": "Sum",
+                          "start": "-PT24H",
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 100
+                              }
+                          },
+                          "annotations": {
+                              "horizontal": [
+                                  [
+                                      {
+                                          "color": "#b2df8d",
+                                          "label": "Untitled annotation",
+                                          "value": 0
+                                      },
+                                      {
+                                          "value": 50,
+                                          "label": "Untitled annotation"
+                                      }
+                                  ],
+                                  {
+                                      "color": "#f89256",
+                                      "label": "Untitled annotation",
+                                      "value": 50,
+                                      "fill": "above"
+                                  }
+                              ]
+                          },
+                          "end": "P0D"
+                      }
+                  },
+                  {
+                      "height": 7,
+                      "width": 4,
+                      "y": 3,
+                      "x": 4,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [ "AWS/Events", "Invocations", "RuleName", "SecurityHubLowFindingsRule", { "region": "${AWS::Region}", "label": "Low Findings" } ]
+                          ],
+                          "period": 86400,
+                          "region": "${AWS::Region}",
+                          "stacked": false,
+                          "title": "Low Findings",
+                          "view": "gauge",
+                          "stat": "Sum",
+                          "start": "-PT24H",
+                          "end": "P0D",
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 100
+                              }
+                          },
+                          "annotations": {
+                              "horizontal": [
+                                  [
+                                      {
+                                          "color": "#b2df8d",
+                                          "label": "Untitled annotation",
+                                          "value": 0
+                                      },
+                                      {
+                                          "value": 50,
+                                          "label": "Untitled annotation"
+                                      }
+                                  ],
+                                  {
+                                      "color": "#f89256",
+                                      "label": "Untitled annotation",
+                                      "value": 50,
+                                      "fill": "above"
+                                  }
+                              ]
+                          }
+                      }
+                  },
+                  {
+                      "height": 7,
+                      "width": 4,
+                      "y": 3,
+                      "x": 8,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [ "AWS/Events", "Invocations", "RuleName", "SecurityHubMediumFindingsRule", { "region": "${AWS::Region}", "label": "Medium Findings" } ]
+                          ],
+                          "period": 86400,
+                          "region": "${AWS::Region}",
+                          "stacked": false,
+                          "title": "Medium Findings",
+                          "view": "gauge",
+                          "stat": "Sum",
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 100
+                              }
+                          },
+                          "annotations": {
+                              "horizontal": [
+                                  [
+                                      {
+                                          "color": "#b2df8d",
+                                          "label": "Untitled annotation",
+                                          "value": 0
+                                      },
+                                      {
+                                          "value": 50,
+                                          "label": "Untitled annotation"
+                                      }
+                                  ],
+                                  {
+                                      "color": "#f89256",
+                                      "label": "Untitled annotation",
+                                      "value": 50,
+                                      "fill": "above"
+                                  }
+                              ]
+                          },
+                          "start": "-PT24H",
+                          "end": "P0D"
+                      }
+                  },
+                  {
+                      "height": 7,
+                      "width": 6,
+                      "y": 3,
+                      "x": 12,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [ "AWS/Events", "Invocations", "RuleName", "SecurityHubHighFindingsRule", { "region": "${AWS::Region}", "label": "SecurityHub-High-Findings" } ]
+                          ],
+                          "period": 86400,
+                          "region": "${AWS::Region}",
+                          "stacked": false,
+                          "title": "High Findings",
+                          "view": "gauge",
+                          "stat": "Sum",
+                          "start": "-PT24H",
+                          "end": "P0D",
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 100
+                              }
+                          },
+                          "annotations": {
+                              "horizontal": [
+                                  [
+                                      {
+                                          "color": "#b2df8d",
+                                          "label": "Untitled annotation",
+                                          "value": 0
+                                      },
+                                      {
+                                          "value": 50,
+                                          "label": "Untitled annotation"
+                                      }
+                                  ],
+                                  {
+                                      "color": "#d62728",
+                                      "label": "Untitled annotation",
+                                      "value": 50,
+                                      "fill": "above"
+                                  }
+                              ]
+                          }
+                      }
+                  },
+                  {
+                      "height": 7,
+                      "width": 6,
+                      "y": 3,
+                      "x": 18,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [ "AWS/Events", "Invocations", "RuleName", "SecurityHubCriticalFindingsRule", { "region": "${AWS::Region}", "label": "Critical Findings" } ]
+                          ],
+                          "period": 86400,
+                          "region": "${AWS::Region}",
+                          "stacked": false,
+                          "title": "Critical Findings",
+                          "view": "gauge",
+                          "stat": "Sum",
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 20
+                              }
+                          },
+                          "annotations": {
+                              "horizontal": [
+                                  [
+                                      {
+                                          "color": "#b2df8d",
+                                          "label": "Untitled annotation",
+                                          "value": 0
+                                      },
+                                      {
+                                          "value": 5,
+                                          "label": "Untitled annotation"
+                                      }
+                                  ],
+                                  {
+                                      "color": "#d62728",
+                                      "label": "Untitled annotation",
+                                      "value": 5,
+                                      "fill": "above"
+                                  }
+                              ]
+                          },
+                          "start": "-PT24H",
+                          "end": "P0D"
+                      }
+                  },
+                  {
+                      "height": 10,
+                      "width": 24,
+                      "y": 10,
+                      "x": 0,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [ "AWS/Events", "Invocations", "RuleName", "SecurityHubHighFindingsRule", { "region": "${AWS::Region}", "label": "High Findings", "period": 60 } ],
+                              [ "...", "SecurityHubCriticalFindingsRule", { "label": "Critical Findings" } ],
+                              [ "...", "SecurityHubInformationalFindingsRule", { "label": "Informational Findings" } ],
+                              [ "...", "SecurityHubMediumFindingsRule", { "label": "Medium Findings" } ]
+                          ],
+                          "period": 86400,
+                          "region": "${AWS::Region}",
+                          "stacked": false,
+                          "title": "High Findings",
+                          "view": "timeSeries",
+                          "stat": "SampleCount",
+                          "start": "-PT24H",
+                          "end": "P0D",
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 100
+                              }
+                          }
+                      }
+                  },
+                  {
+                      "height": 3,
+                      "width": 24,
+                      "y": 0,
+                      "x": 0,
+                      "type": "text",
+                      "properties": {
+                          "markdown": "# Security Hub Event Dashboard [button:primary:Security Hub Dashboard](https://${AWS::Region}.console.aws.amazon.com/securityhub/home?region=${AWS::Region}#/summary) \n\nThis dashboard displays Security Hub events by severity over the last 24 Hour period\n \n"
+                      }
+                  }
+              ]
+          }
+
+Outputs:
+  SecurityHubAlertStepFunctionArn:
+    Description: "ARN of the Security Hub Alert Processing Step Function"
+    Value: !GetAtt SecurityHubAlertStepFunction.Arn
+
+  AppConfigApplicationId:
+    Description: "ID of the AppConfig Application"
+    Value: !Ref SecurityHubAlertAppConfigApplication
+
+  AppConfigConfigurationProfileId:
+    Description: "ID of the AppConfig Configuration Profile"
+    Value: !Ref SecurityHubAlertAppConfigConfigProfile
